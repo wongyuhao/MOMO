@@ -1,7 +1,10 @@
+import re
+
 import numpy as np
 import cv2
 import matplotlib.pyplot as plt
 import pytesseract
+from pytesseract import Output
 
 from skimage.filters import threshold_local
 from PIL import Image
@@ -124,7 +127,61 @@ def adaptive_thresholing(image):
 
     return thresh
 
+def format_dollar_value(value):
+    # Match the dollar value using regex
+    match = re.match(r'^(\$?\d+)\.(\d+)$|^(\$?\d+)$|^\.(\d+)$|^(\d+)\.(\d+)$|^(\d+)$', value)
+    if match:
+        # Extract the numbers before and after the decimal point
+        groups = match.groups()
+        dollars = int(groups[0] or groups[2] or groups[4] or groups[5] or groups[6] or 0)
+        cents = int(groups[1] or groups[3] or 0)
+        # Format the numbers as xx.xx
+        return "{:02d}.{:02d}".format(dollars, cents)
+    else:
+        # Return the original value if it doesn't match the expected format
+        return value
 
+def parse_item_lines(lines):
+    regex = r'^(\w+(?:[\s+\w+~.])*)\s+((\$?\d*(?: *\.\d+)?|\$?\d*(?:\.\d+ *)?))$'
+
+    res = []
+    for line in lines:
+        parsed_line = re.match(regex, line)
+        if parsed_line:
+            name = parsed_line.group(1)
+            value = parsed_line.group(2)
+
+            value = format_dollar_value(value.removeprefix('$'))
+
+            item = (name, value)
+            print(item)
+            print('\n')
+
+
+            res.append(item)
+    return res
+
+def detect_text(image, lib=None):
+    if lib == 'TESSERACT':
+        return detect_text_with_tesseract(image)
+    else:
+        print('OCR library not specified. Running Tesseract.')
+        return detect_text_with_tesseract(image)
+
+def detect_text_with_tesseract(image):
+    d = pytesseract.image_to_data(image, output_type=Output.DICT)
+    n_boxes = len(d['level'])
+    boxes = cv2.cvtColor(image.copy(), cv2.COLOR_BGR2RGB)
+    for i in range(n_boxes):
+        (x, y, w, h) = (d['left'][i], d['top'][i], d['width'][i], d['height'][i])
+        boxes = cv2.rectangle(boxes, (x, y), (x + w, y + h), (0, 255, 0), 2)
+
+    lines = pytesseract.image_to_string(image)
+
+    result = list(filter(lambda x: len(x) != 0, lines.splitlines()))
+
+    res = parse_item_lines(result)
+    return boxes, res
 
 
 def pipeline(image):
@@ -138,27 +195,25 @@ def pipeline(image):
 
     # step 2: warp the highlighted region into a flat receipt
     warped_receipt = perspective_warp(image.copy(), receipt_contour, resize_ratio)
-    cv2.imshow('receipt', warped_receipt)
 
     # step 3: apply adaptive thresholding to the image as preprocessing for tesseract
     bw_receipt = adaptive_thresholing(warped_receipt)
     cv2.imshow("Mean Adaptive Thresholding", bw_receipt)
 
     # step 4: identify text boxes with tesseract
-    data = pytesseract.image_to_data(bw_receipt)
-    print(data)
+    boxes, result = detect_text(bw_receipt)
+    cv2.imshow('box', boxes)
 
-
-
-
+    print(result)
     cv2.waitKey(0)
-
     return
 
 
-file2 = "images/7.jpg"
-file3 = "images/6.jpg"
+file1 = "images/7.jpg"
+file2 = "images/6.jpg"
+file3 = 'images/tj2.png'
 
 
-img = cv2.imread('images/7.jpg')
+
+img = cv2.imread(file3)
 pipeline(img)
