@@ -1,23 +1,17 @@
+import io
 import re
+import time
+import uuid
 
 import numpy as np
 import cv2
-import matplotlib.pyplot as plt
 import pytesseract
-from pytesseract import Output
-
-from skimage.filters import threshold_local
+from flask import jsonify, send_file
 from PIL import Image
-
-# take an image
-
-
-
-# input: image file_name
-# downscales image and converts it to grayscale
+from pytesseract import Output
+from util import uploadPILtoBucket
 
 
-# runs canny edge detection on a preprocessed image
 def find_receipt(image, resize_ratio):
     def preprocess_image(image, ratio):
         width = int(image.shape[1] * ratio)
@@ -52,24 +46,22 @@ def find_receipt(image, resize_ratio):
     dilation = cv2.dilate(smoothed, kernel, iterations=2)
 
     # run canny edge detection on the image:
-    edges = cv2.Canny(dilation, 120, 180, apertureSize=3)
+    raw_edges = cv2.Canny(dilation, 120, 180, apertureSize=3)
 
     # erode and dilate to connect broken edges
-    d2 = cv2.dilate(edges, kernel, iterations=3)
-    d3 = cv2.erode(d2, kernel, iterations=3)
-
-    # cv2.imshow('edges (eroded + dilated)', d3)
+    dilated_edges = cv2.dilate(raw_edges, kernel, iterations=3)
+    edges = cv2.erode(dilated_edges, kernel, iterations=3)
 
     # find contours
     # https://docs.opencv.org/3.4/d4/d73/tutorial_py_contours_begin.html
-    contours, hierarchy = cv2.findContours(d3, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+    contours, hierarchy = cv2.findContours(edges, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
 
     # find the receipt contour from the 10 largest contours in the image
     res_contour = find_receipt_contour(sorted(contours, key=cv2.contourArea, reverse=True)[:10])
 
     res_image = cv2.drawContours(resized.copy(), [res_contour], -1, (0, 0, 255), 1)
 
-    return res_image, res_contour
+    return res_image, res_contour, edges
 
 
 def perspective_warp(img, contour, ratio):
@@ -118,6 +110,7 @@ def perspective_warp(img, contour, ratio):
     # transform from orig to mapped
     return cv2.warpPerspective(img, cv2.getPerspectiveTransform(original_rect, mapped), (maxWidth, maxHeight))
 
+
 def adaptive_thresholing(image):
     # https://pyimagesearch.com/2021/05/12/adaptive-thresholding-with-opencv-cv2-adaptivethreshold/
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
@@ -126,6 +119,7 @@ def adaptive_thresholing(image):
                                    cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY, 21, 10)
 
     return thresh
+
 
 def format_dollar_value(value):
     # Match the dollar value using regex
@@ -141,6 +135,7 @@ def format_dollar_value(value):
         # Return the original value if it doesn't match the expected format
         return value
 
+
 def parse_item_lines(lines):
     regex = r'^(\w+(?:[\s+\w+~.])*)\s+((\$?\d*(?: *\.\d+)?|\$?\d*(?:\.\d+ *)?))$'
 
@@ -153,13 +148,10 @@ def parse_item_lines(lines):
 
             value = format_dollar_value(value.removeprefix('$'))
 
-            item = (name, value)
-            print(item)
-            print('\n')
-
-
+            item = {"name": name, "value": value}
             res.append(item)
     return res
+
 
 def detect_text(image, lib=None):
     if lib == 'TESSERACT':
@@ -167,6 +159,7 @@ def detect_text(image, lib=None):
     else:
         print('OCR library not specified. Running Tesseract.')
         return detect_text_with_tesseract(image)
+
 
 def detect_text_with_tesseract(image):
     d = pytesseract.image_to_data(image, output_type=Output.DICT)
@@ -185,35 +178,63 @@ def detect_text_with_tesseract(image):
 
 
 def pipeline(image):
+    DEBUG = False
 
     # step 0: determine resize ratio based on image dimensions
     resize_ratio = 500 / image.shape[0]
+    start = time.process_time()
 
     # step 1: find and highlight receipt in the image
-    receipt_image, receipt_contour = find_receipt(image, resize_ratio)
-    cv2.imshow('boxed receipt', receipt_image)
+    receipt_image, receipt_contour, edges_image = find_receipt(image, resize_ratio)
+    if DEBUG:
+        cv2.imshow('boxed receipt', receipt_image)
+        cv2.imshow('edges', edges_image)
 
     # step 2: warp the highlighted region into a flat receipt
-    warped_receipt = perspective_warp(image.copy(), receipt_contour, resize_ratio)
+    warped_image = perspective_warp(image.copy(), receipt_contour, resize_ratio)
+    if DEBUG:
+        cv2.imshow('warped_receipt', warped_image)
 
     # step 3: apply adaptive thresholding to the image as preprocessing for tesseract
-    bw_receipt = adaptive_thresholing(warped_receipt)
-    cv2.imshow("Mean Adaptive Thresholding", bw_receipt)
+    bw_receipt_image = adaptive_thresholing(warped_image)
+    if DEBUG:
+        cv2.imshow("Mean Adaptive Thresholding", bw_receipt_image)
 
     # step 4: identify text boxes with tesseract
-    boxes, result = detect_text(bw_receipt)
-    cv2.imshow('box', boxes)
+    boxed_text_image, items = detect_text(bw_receipt_image)
 
-    print(result)
-    cv2.waitKey(0)
-    return
+    pipeline_elapsed = time.process_time() - start
 
+    if DEBUG:
+        cv2.imshow('box', boxed_text_image)
+        cv2.waitKey()
 
-file1 = "images/7.jpg"
-file2 = "images/6.jpg"
-file3 = 'images/tj2.png'
+    pipeline_steps = {
+        'edges': edges_image,
+        'contour': receipt_image,
+        'perspective': warped_image,
+        'threshold': bw_receipt_image,
+        'scanned': boxed_text_image
+    }
 
+    urls = []
 
+    # only save to s3 if we find text, otherwise return empty
+    if len(items) > 0:
+        id = str(uuid.uuid4())
+        for step, img in pipeline_steps.items():
+            # convert openCV image to PIL image
+            rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            pil_img = Image.fromarray(rgb)
+            pil_img.thumbnail((500, 500), Image.LANCZOS)
+            urls.append(uploadPILtoBucket(pil_img, 'temp/%s/%s.jpeg' % (id, step)))
 
-img = cv2.imread(file3)
-pipeline(img)
+    total_elapsed = time.process_time() - start
+
+    res = {
+        "items": items,
+        "images": urls,
+        "pipeline_elapsed": "%.4f" % pipeline_elapsed,
+        "total_elapsed": "%.4f" % total_elapsed
+    }
+    return res
