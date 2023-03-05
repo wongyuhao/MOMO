@@ -1,0 +1,8 @@
+{
+    "flask": {
+        "image": ":haoyudoing-cv.haoyudoing-cv.2",
+        "ports": {
+            "5001": "HTTP"
+        }
+    }
+}

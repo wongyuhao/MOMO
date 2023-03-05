@@ -1,0 +1,9 @@
+flask===2.2.3
+botocore===1.29.84
+boto3===1.26.84
+Flask-Cors===3.0.10
+numpy
+opencv-python
+Pillow
+pytesseract
+python-dotenv
