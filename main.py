@@ -1,4 +1,3 @@
-import io
 import re
 import time
 import uuid
@@ -6,7 +5,6 @@ import uuid
 import numpy as np
 import cv2
 import pytesseract
-from flask import jsonify, send_file
 from PIL import Image
 from pytesseract import Output
 from util import uploadPILtoBucket
