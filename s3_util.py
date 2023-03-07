@@ -29,4 +29,10 @@ def uploadPILtoBucket(image, filename):
         ExtraArgs={"ContentType": "image/jpeg"}
     )
 
-    return '%s/%s' % (ENDPOINT, filename)
+    url = s3.generate_presigned_url(
+        ClientMethod='get_object',
+        Params={'Bucket': BUCKET, 'Key': filename},
+        ExpiresIn=172800
+    )
+
+    return url

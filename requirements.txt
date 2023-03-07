@@ -6,4 +6,5 @@ numpy
 opencv-python
 Pillow
 pytesseract
+tesseract
 python-dotenv

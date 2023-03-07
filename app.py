@@ -1,3 +1,5 @@
+import traceback
+
 import cv2
 from flask import request, jsonify, Response
 import flask
@@ -25,8 +27,10 @@ def intake_image():
 
         return jsonify(res)
     except Exception as e:
+        msg = traceback.format_exc()
+        print(msg)
         return Response(
-            str(e),
+            str(msg),
             400
         )
 
